@@ -6,6 +6,7 @@ use utf8;
 use Kossy;
 use DBI;
 use JSON;
+use Cache::Memcached::Fast;
 
 our $VERSION = 0.01;
 
@@ -31,13 +32,25 @@ sub dbh {
     });
 }
 
+my $cache;
+sub cache {
+    $cache ||= Cache::Memcached::Fast->new({
+        servers => ['127.0.0.1:11211'],
+    });
+}
+
 filter 'recent_commented_articles' => sub {
     my $app = shift;
     sub {
         my ( $self, $c )  = @_;
-        $c->stash->{recent_commented_articles} = $self->dbh->selectall_arrayref(
-            'SELECT id, title FROM article ORDER BY commented_at DESC LIMIT 10',
-            { Slice => {} });
+        my $rows = $self->cache->get('recent_commented_articles');
+        unless ($rows) {
+            $rows = $self->dbh->selectall_arrayref(
+                'SELECT id, title FROM article ORDER BY commented_at DESC LIMIT 10',
+                { Slice => {} });
+            $self->cache->set('recent_commented_articles', $rows);
+        }
+        $c->stash->{recent_commented_articles} = $rows;
         $app->($self,$c);
     }
 };
@@ -88,6 +101,7 @@ post '/comment/:articleid' => sub {
         my $sth = $self->dbh->prepare('UPDATE article SET commented_at = UNIX_TIMESTAMP() WHERE id = ?');
         $sth->execute($c->args->{articleid});
     };
+    $self->cache->delete('recent_commented_articles');
     $c->redirect($c->req->uri_for('/article/'.$c->args->{articleid}));
 };
 
